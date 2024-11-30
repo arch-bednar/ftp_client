@@ -1,27 +1,24 @@
 import socket
-from logging import raiseExceptions
 from sys import argv
 from urllib.parse import urlparse
-import readchar
-import threading
-import os  # <<<====== for os.linesep (CR+LF)
-import ftp_exceptions
-from ftp_exceptions import NumberOfParameters, InvalidUrl, InvalidCommand, InvalidUser
+import os
+from ftp_exceptions import NumberOfParameters, InvalidUrl, InvalidCommand, InvalidOption
 import time
 
 
 class ClientFtp:
     def __init__(self):
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._pasv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._port = 21
-        self._event = threading.Event()
         self._sep = "\r\n"
         self._restricted_commands = {"cp": ["-u", "-o", "-p", "-s", "-d"],
-                                     "mkdir": ["-u", "-o", "-p"],
-                                     "rmdir": ["-u", "-o", "-p"],
-                                     "rm": ["-u", "-o", "-p"],
+                                     "mkdir": ["-u", "-o", "-p", "-d"],
+                                     "rmdir": ["-u", "-o", "-p", "-d"],
+                                     "rm": ["-u", "-o", "-p", "-d"],
                                      "mv": ["-u", "-o", "-p", "-s", "-d"],
-                                     "ls": []}
+                                     "ls": [],
+                                     "wget": ["-u", "-o", "-p", "-s", "-d"]}
 
     def _command_validation(self, argv: list) -> dict:
         # print(argv[1])
@@ -29,6 +26,7 @@ class ClientFtp:
         restr_command = self._restricted_commands.keys()
         command = argv[1]
         arguments = dict()  #return list of parameters
+        arguments["command"] = command
 
         if command in ("cp", "mv") and len(argv[1:]) == 3:
             arguments["mode"] = "1"
@@ -36,10 +34,20 @@ class ClientFtp:
                 self._print_help_for_command(command)
                 raise InvalidUrl(-20009, argv[3])
             else:
-                arguments["command"] = command
                 arguments["mode"] = "1"
                 arguments["-s"] = argv[2]
                 # arguments["-d"] = argv[3]
+                print("OK")
+                return arguments
+        elif command == "wget" and len(argv[1:]) == 3:
+            arguments["mode"] = "1"
+            if self._verify_url(argv[2], arguments["mode"], arguments) == 1:
+                self._print_help_for_command(command)
+                raise InvalidUrl(-20009, argv[2])
+            else:
+                arguments["mode"] = "1"
+                arguments["-s"] = argv[2]
+                arguments["-d"] = argv[3]
                 print("OK")
                 return arguments
         elif command in ("rm", "mkdir", "rmdir") and len(argv[1:]) == 2:
@@ -48,8 +56,6 @@ class ClientFtp:
                 self._print_help_for_command(command)
                 raise InvalidUrl(-20009, argv[2])
             else:
-                arguments["command"] = command
-                # arguments["param1"] = argv[2]
                 print("OK")
                 return arguments
         else:
@@ -57,50 +63,40 @@ class ClientFtp:
             options = dict()
             border = len(argv)
             if argv[1] not in restr_command:
-                raise InvalidCommand(command)
+                raise InvalidCommand(-20099, command)
 
             index = 2
             last_value = str()
-            if argv[1] in ("mkdir", "rmdir", "rm"):
-                last_value = argv[border - 1]
-                border -= 1
+            # if argv[1] in ("mkdir", "rmdir", "rm"):
+            #     border -= 1
 
             while index < border:
                 if argv[index] not in self._restricted_commands[argv[1]]:
-                    print("Not known option \"{}\" for command \"{}\"".format(argv[index], argv[1]))
-                    return dict()
+                    raise InvalidOption(-20110, command, argv[index])
+                    #print("-20110: Not known option \"{}\" for command \"{}\"".format(argv[index], argv[1]))
+                    #return dict()
                 else:
                     try:
                         options[argv[index]] = argv[index + 1]
                     except IndexError:
-                        print("Wrong number od arguments")
-                        return dict()
+                        #raise Exception("-20111: Wrong number of arguments")
+                        raise NumberOfParameters(-20111, command)
                 index += 2
 
-            options_keys = options.keys()
+            options_keys = set(options.keys())
             # command_params = self._restricted_commands[argv[1]].keys()
-            command_params = self._restricted_commands[argv[1]]
-
+            command_params = set(self._restricted_commands[argv[1]])
+            print(",,,,,,,,,,,,,,,,,,")
+            print(command_params)
+            print(options_keys)
             if options_keys != command_params:
-                print("Invalid usage - missing parameters: ",
-                      [param for param in command_params if param not in options_keys])
-                self._print_help_for_command(command)
-
-            print(options["-u"])
-            # if self._verify_user(options["-u"]) == 1:
-            #     raise InvalidUser()
-
-            if last_value != "":
-                if self._verify_url(last_value, arguments["mode"]) == 1:
+                try:
+                    raise Exception("-20112: Invalid usage - missing parameters: ",
+                          [param for param in command_params if param not in options_keys])
+                finally:
                     self._print_help_for_command(command)
-                    raise InvalidUrl(-20009, last_value)
-                options["-d"] = last_value
-            print(options)
 
             arguments.update(options)
-            arguments["command"] = command
-            print("_command_validation: OK")
-
             return arguments
 
     def _verify_url(self, adrr_url: str, mode: str, arguments: dict = None) -> int:
@@ -137,16 +133,12 @@ class ClientFtp:
         arguments["-u"] = user
         arguments["-p"] = password
         arguments["-o"] = port
-        arguments["-d"] = interpret.scheme + "://" + address + interpret.path
-        return 0
-
-    def _verify_user(self, user: str) -> int:
-        for char in user:
-            c = ord(char)
-            print(c)
-            if c not in range(65, 90 + 1) or c not in range(61, 122 + 1) or c not in (45, 95):
-                print(f"User \"{user}\"contains illegal characters")
-                return 1
+        if arguments["command"] == "wget":
+            arguments["-s"] = interpret.scheme + "://" + address + interpret.path
+            print("arguments[-s]")
+            print(arguments["-s"])
+        else:
+            arguments["-d"] = interpret.scheme + "://" + address + interpret.path
         return 0
 
     def _print_help_for_command(self, command):
@@ -180,115 +172,247 @@ class ClientFtp:
 
     def _calculate_port(self, hex1: str, hex2: str) -> int:
         try:
-            port = int(hex1) * 16 + int(hex2)
+            port = int(hex1) * 256 + int(hex2)
             return port
         except ValueError as e:
             print(e)
 
-    def _execute_command(self, args: dict):
-        data = bytes()
-        data = self._socket.recv(1024)
+    def _send_cmd(self, cmd):
+        self._socket.send(cmd.encode())
 
+    def _get_data(self) -> str:
+        print("_get_data")
+        return self._socket.recv(1024).decode("utf-8")
+
+    def _execute_command(self, args: dict):
+        data = str()
+        status_code = ""
+        data = self._get_data()
+        print(data)
         command = args["command"]
         if command == "cp":
-            send = self._add_sep("USER " + args["-u"])
-            send = self._add_sep("PASS " + args["-p"])
-            send = self._add_sep("PASV")
-            send = self._add_sep("LIST")
-            pass
+            self._login(args["-u"], args["-p"])
+            self._connect_pasv()
+            self._configure_modes()
+            self._copying_file(args["-s"], urlparse(args["-d"]).path)
         elif command == "mv":
-            send = self._add_sep("USER " + args["-u"])
-            send = self._add_sep("PASS " + args["-p"])
+            self._login(args["-u"], args["-p"])
+            self._connect_pasv()
+            self._configure_modes()
+            self._moving_file(args["-s"], urlparse(args["-d"]).path)
         elif command == "mkdir":
-            send = self._add_sep("USER " + args["-u"])
-            send = self._add_sep("PASS " + args["-p"])
+            self._login(args["-u"], args["-p"])
+            self._mkdir(urlparse(args["-d"]).path)
         elif command == "rmdir":
-            send = self._add_sep("USER " + args["-u"])
-            send = self._add_sep("PASS " + args["-p"])
+            self._login(args["-u"], args["-p"])
+            self._rmdir(urlparse(args["-d"]).path)
         elif command == "rm":
-            send = self._add_sep("USER " + args["-u"])
-            send = self._add_sep("PASS " + args["-p"])
+            self._login(args["-u"], args["-p"])
+            self._del_file(urlparse(args["-d"]).path)
+        elif command == "ls":
+            self._login(args["-u"], args["-p"])
+            self._connect_pasv()
+            self._list(urlparse(args["-d"]).path)
+        elif command == "wget":
+            self._login(args["-u"], args["-p"])
+            self._connect_pasv()
+            self._configure_modes()
+            self._wget(urlparse(args["-s"]).path, args["-d"])
 
-    def _cut_status_code(self, buffer: bytes) -> str:
-        return str(buffer)[:3]
+    def _cut_status_code(self, buffer: str) -> str:
+        return buffer[:3]
 
     def _add_sep(self, string: str) -> str:
         return string + chr(13) + chr(10)
 
-    def _connect_pasv(self, data: bytearray):
-        line = data.decode("utf-8")
-        address = line[line.find("(") + 1:line.find(")")].split(",")
-        port = self._calculate_port(address[-2], address[-1])
-        pasv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        pasv_socket.connect((address, port))
+    def _login(self, user, password):
+        send = self._add_sep("USER " + user)
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        status_code = self._cut_status_code(data)
 
-    def _listen(self):
-        print(self._event.is_set())
-        while self._event.is_set():
-            print("Listening...")
+        if not status_code.startswith("3"):
+            self._socket.close()
+            raise Exception(data)
+        else:
+            print(data)
+
+        time.sleep(1)
+        send = self._add_sep("PASS " + password)
+        print(send)
+        self._send_cmd(send)
+        time.sleep(1)
+        data = self._get_data()
+        status_code = self._cut_status_code(data)
+
+        if not status_code.startswith("2"):
+            self._socket.close()
+            raise Exception(data)
+        else:
+            print(data)
+
+    def _connect_pasv(self):
+        try:
+            send = self._add_sep("PASV")
+            print(send)
+            self._send_cmd(send)
+            data = self._get_data()
+            print(data)
+            status_code = self._cut_status_code(data)
+
+            if status_code.startswith("5"):
+                self._socket.close()
+                raise Exception(data)
+
+            address = data[data.find("(") + 1:data.find(")")].split(",")
+            port = self._calculate_port(address[-2], address[-1])
+            self._pasv_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._pasv_socket.connect((address[-6] + "." + address[-5] + "." + address[-4] + "." + address[-3], port))
+            print("PASV connected")
+        except ConnectionError as e:
+            print("connection error")
+            self._socket.close()
+            self._pasv_socket.close()
+            print(e)
+        finally:
+            print("ending _connect_pasv")
+
+    def _configure_modes(self):
+        send = self._add_sep("TYPE I")
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+        send = self._add_sep("MODE S")
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+        send = self._add_sep("STRU F")
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+
+    def _copying_file(self, file, destination):
+        try:
+            f = open(file, "rb")
             try:
-                data = self._socket.recv(1024)
+                file_name = file[file.rfind("/")+1:]
+                send = self._add_sep(f"STOR {destination}/{file_name}")
+                print(send)
+                self._send_cmd(send)
+                data = self._get_data()
+                print(data)
+                self._pasv_socket.sendfile(f)
+                f.close()
+                time.sleep(1)
+                self._pasv_socket.close()
+                data = self._get_data()
+                print(data)
+            except Exception as e:
+                print(e)
+                f.close()
+        except Exception as e:
+            raise Exception(e)
+
+
+    def _moving_file(self, file, destination):
+        self._copying_file(file, destination)
+        os.remove(file)
+
+    def _mkdir(self, directory):
+        send = self._add_sep("MKD " + directory)
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+        self._socket.close()
+
+    def _rmdir(self, directory):
+        send = self._add_sep("RMD " + directory)
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+        self._socket.close()
+
+    def _del_file(self, file):
+        send = self._add_sep("DELE " + file)
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+        self._socket.close()
+
+    def _list(self, directory: str = str()):
+        send = self._add_sep("LIST {}".format(directory))
+        print(send)
+        self._send_cmd(send)
+        while True:
+            data = self._pasv_socket.recv(1024)
+            if not data:
+                break
+            print(data.decode("utf-8"))
+
+        data = self._get_data()
+        print(data)
+        self._pasv_socket.close()
+        self._socket.close()
+
+    def _wget(self, file, destination):
+        send = self._add_sep(f"RETR {file}")
+        print(send)
+        self._send_cmd(send)
+        data = self._get_data()
+        print(data)
+
+        if destination.rfind('/') != len(destination)-1:
+            destination += '/'
+
+        destination = destination + file[file.rfind('/')+1:]
+
+        with open(destination, "wb") as f:
+            while True:
+                data = self._pasv_socket.recv(1024)
                 if not data:
                     break
-                print(data.decode("utf-8"))
-            except BrokenPipeError:
-                self._event.clear()
-                print("Connection is broken")
+                f.write(data)
 
+        self._pasv_socket.close()
+        data = self._get_data()
+        print(data)
+        self._socket.close()
     def start(self, argv: list):
-        localhost = "127.0.0.1"
-        address = None
-        port = None
-        thread = None
-        print(">>>>>>>>")
         param = self._command_validation(argv)
         print(param)
-        address = urlparse(param["-d"]).netloc
-        port = param["-o"]
-        print("param - port" + port)
-        print(type(port))
-        print("++++++++ print param")
-        print(param)
-        print("========")
         # return
 
-        choice = ""
-        # while choice not in ('y', 'Y', 'n', 'N'):
-        #     print("Do you want to use localhost to connect with port 21, or enter your destination? [y/N]: ", end="")
-        #     choice = readchar.readchar()
-        #     print("")
-        #
-        # if choice in ('y', 'Y'):
-        #     address = input("Server address: ")
-        #     port = input("Port: ")
+        #param = {"command": "rmdir", "-u": "test", "-o": "21", "-p": "test", "-d": "ftp://127.0.0.1/folder_twojej_starej/3"}
+        #param = {"command": "rm", "-u": "test", "-o": "21", "-p": "test", "-d": "ftp://127.0.0.1/folder_twojej_starej/family-guy-css.gif"}
+        #param = {"command": "ls", "-u": "test", "-o": "21", "-p": "test", "-d": "ftp://127.0.0.1/folder_twojej_starej"}
+        # param = {"command": "mv", "-u": "test", "-o": "21", "-p": "test",
+        #          "-s": "/Users/Shared/pliczki/family-guy-css.gif",
+        #          "-d": "ftp://127.0.0.1/folder"}
+        # param = {"command": "mkdir", "-u": "test", "-o": "21", "-p": "test",
+        #          "-d": "ftp://127.0.0.1/folder/3"}
+        # param = {"command": "wget", "-u": "test", "-o": "21", "-p": "test",
+        #          "-d": "/Users/Shared/pliczki/",
+        #          "-s": "ftp://127.0.0.1/folder/family-guy-css.gif"}
 
-        if len(argv) < 2:
-            print("Not enough parameters")
-            return
 
-        # if choice in ('y', 'Y'):
-        #     self._socket.connect((address, port))
-        # else:
-        #     self._socket.connect((localhost, 21))
-        self._socket.connect((address, int(port)))
-        # self._event.set()
-        # self._socket.setblocking(False)
-        # thread = threading.Thread(target=self._listen, args=())
-        # thread.start()
+        print(urlparse(param["-d"]).netloc, param["-o"])
+        self._socket.connect((urlparse(param["-d"]).netloc, int(param["-o"])))
         time.sleep(3)
 
         try:
-            # while self._event.is_set():
-            #     line = input("#> ")
             print("execute param")
             self._execute_command(param)
-        except KeyboardInterrupt:
-            print("Caught an exception")
+        except (KeyboardInterrupt, BrokenPipeError) as e:
             self._socket.close()
-            self._event.clear()
+            self._pasv_socket.close()
+            print("Connection closed due to error: " + e)
 
-        #self._command_validation(argv)
-        #self._socket.connect((localhost, self._port))
 
 
 if __name__ == "__main__":
