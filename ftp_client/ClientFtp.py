@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 import os
 from ftp_exceptions import NumberOfParameters, InvalidUrl, InvalidCommand, InvalidOption
 import time
+import readchar
 
 
 class ClientFtp:
@@ -148,8 +149,15 @@ class ClientFtp:
             print("---or---")
             print(f"{command} <link_path_from> <link_path_to")
             print("format for <absolute_path_to>: ftp://absolute/path/to/file_or_directory")
-
             print("format for <link_path_to>: ", end="")
+            print("ftp://<user>:<password>@<server_address>/absolute/path/to/file_or_directory")
+        if command == "wget":
+            print(f"Syntax for command {command}")
+            print(f"{command} -u <user> -p <password> -o <port> <absolute_path_from> <absolute_path_to>")
+            print("---or---")
+            print(f"{command} <link_path_from> <link_path_to")
+            print("format for <absolute_path_from>: ftp://absolute/path/to/file_or_directory")
+            print("format for <link_path_from>: ", end="")
             print("ftp://<user>:<password>@<server_address>/absolute/path/to/file_or_directory")
         elif command == "mkdir":
             print(f"Syntax for command {command}")
@@ -283,16 +291,25 @@ class ClientFtp:
         print(send)
         self._send_cmd(send)
         data = self._get_data()
-        print(data)
+        if data.startswith("5") or data.startswith("4"):
+            raise Exception("Error occurred when TYPE command was setting up: " + data)
+        else:
+            print(data)
         send = self._add_sep("MODE S")
         print(send)
         self._send_cmd(send)
         data = self._get_data()
-        print(data)
+        if data.startswith("5") or data.startswith("4"):
+            raise Exception("Error occurred when MODE command was setting up: " + data)
+        else:
+            print(data)
         send = self._add_sep("STRU F")
         self._send_cmd(send)
         data = self._get_data()
-        print(data)
+        if data.startswith("5") or data.startswith("4"):
+            raise Exception("Error occurred when STRU command was setting up: " + data)
+        else:
+            print(data)
 
     def _copying_file(self, file, destination):
         try:
@@ -303,6 +320,8 @@ class ClientFtp:
                 print(send)
                 self._send_cmd(send)
                 data = self._get_data()
+                if data.startswith("5") or data.startswith("4"):
+                    raise Exception("Error occured: " + data)
                 print(data)
                 self._pasv_socket.sendfile(f)
                 f.close()
@@ -312,14 +331,24 @@ class ClientFtp:
                 print(data)
             except Exception as e:
                 print(e)
+                self._pasv_socket.close()
+                self._socket.close()
                 f.close()
         except Exception as e:
             raise Exception(e)
 
 
     def _moving_file(self, file, destination):
-        self._copying_file(file, destination)
-        os.remove(file)
+        if not os.path.isfile(file):
+            raise Exception("File does not exists")
+        try:
+            self._copying_file(file, destination)
+        except Exception as e:
+            raise Exception(e)
+        try:
+            os.remove(file)
+        except Exception as e:
+            raise Exception("Error occured while deleting", e)
 
     def _mkdir(self, directory):
         send = self._add_sep("MKD " + directory)
@@ -361,23 +390,34 @@ class ClientFtp:
         self._socket.close()
 
     def _wget(self, file, destination):
+
+        if not os.path.isdir(destination):
+            raise Exception(f"Destination :{destination} does not exists")
+
         send = self._add_sep(f"RETR {file}")
         print(send)
         self._send_cmd(send)
         data = self._get_data()
-        print(data)
+
+        if data.startswith("5") or data.startswith("4"):
+            raise Exception("Error occurred in wget" + data)
+        else:
+            print(data)
 
         if destination.rfind('/') != len(destination)-1:
             destination += '/'
 
         destination = destination + file[file.rfind('/')+1:]
 
-        with open(destination, "wb") as f:
-            while True:
-                data = self._pasv_socket.recv(1024)
-                if not data:
-                    break
-                f.write(data)
+        try:
+            with open(destination, "wb") as f:
+                while True:
+                    data = self._pasv_socket.recv(1024)
+                    if not data:
+                        break
+                    f.write(data)
+        except Exception as e:
+            raise Exception(e)
 
         self._pasv_socket.close()
         data = self._get_data()
